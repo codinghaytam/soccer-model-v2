@@ -11,7 +11,7 @@ from models.models import LSTMScorer
 
 # Configuration for IDE usage (no CLI)
 CSV_PATH = "data/keypoints.csv"
-EPOCHS = 20
+EPOCHS = 100
 BATCH_SIZE = 8
 LEARNING_RATE = 1e-3
 DEVICE = "cuda"  # or "cpu"
