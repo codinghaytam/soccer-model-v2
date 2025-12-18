@@ -1,0 +1,15 @@
+              precision    recall  f1-score   support
+
+      corner      0.489     0.478     0.484        46
+        foul      0.389     0.467     0.424        45
+    freekick      0.150     0.143     0.146        21
+    goalkick      0.737     0.646     0.689        65
+    longpass      0.807     0.868     0.836        53
+    ontarget      0.583     0.636     0.609        33
+     penalty      0.378     0.259     0.308        54
+   shortpass      0.594     0.864     0.704        22
+    throw-in      0.694     0.708     0.701        48
+
+    accuracy                          0.574       387
+   macro avg      0.536     0.563     0.544       387
+weighted avg      0.568     0.574     0.567       387
