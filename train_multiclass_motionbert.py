@@ -29,12 +29,13 @@ import matplotlib.pyplot as plt
 
 # IDE configuration
 CSV_PATH = "data/keypoints.csv"
-EPOCHS = 100
-BATCH_SIZE = 32
-LEARNING_RATE = 1e-6
+EPOCHS = 150
+BATCH_SIZE = 16
+LEARNING_RATE = 1e-2
 DEVICE = "cuda"
 TEST_SPLIT = 0.2
 SEED = 42
+EARLY_STOP_ACC = 0.93  # stop when val accuracy >= this
 LOCAL_MB_CHECKPOINT = Path("models/bert_classifier.bin")
 CONFIG_YAML = Path("MotionBERT/configs/action/MB_ft_NTU60_xsub.yaml")
 NUM_JOINTS = 17
@@ -42,14 +43,14 @@ CHANNELS = 3   # x,y,conf
 PERSONS = 1    # M
 OUT_DIR = Path("models/motionbert")
 # Replicate videos N times (dataset multiplier)
-MULTIPLIER = 1
+MULTIPLIER = 5
 
 LIGHT_CFG_OVERRIDES = {
     "dim_feat": 128,
     "dim_rep": 256,
     "depth": 3,
     "num_heads": 4,
-    "dropout_ratio": 0.0,
+    "dropout_ratio": 0.5,
 }
 
 
@@ -236,6 +237,7 @@ def train_multiclass_motionbert(csv_path: str, epochs: int, batch_size: int, lr:
 
     train_losses = []
     val_losses = []
+    best_val_acc = -1.0
 
     for epoch in range(1, epochs + 1):
         model.train()
@@ -264,6 +266,7 @@ def train_multiclass_motionbert(csv_path: str, epochs: int, batch_size: int, lr:
 
         val_msg = ""
         v_loss_epoch = None
+        val_acc = None
         if val_loader is not None:
             model.eval()
             v_total = 0.0
@@ -285,6 +288,33 @@ def train_multiclass_motionbert(csv_path: str, epochs: int, batch_size: int, lr:
             val_acc = v_correct / max(v_count, 1)
             v_loss_epoch = val_loss
             val_msg = f" | val loss {val_loss:.4f} acc {val_acc:.3f}"
+            # Track best
+            if val_acc > best_val_acc:
+                best_val_acc = val_acc
+                torch.save({
+                    "model_state": model.state_dict(),
+                    "label_to_idx": label_to_idx,
+                    "config": cfg,
+                    "persons": PERSONS,
+                    "joints": NUM_JOINTS,
+                    "channels": CHANNELS,
+                }, Path("models/motionbert") / "motionbert_multiclass.pt")
+            # Early stopping when threshold reached
+            if val_acc >= EARLY_STOP_ACC:
+                print(f"[MB-MC] Early stop at epoch {epoch} with val acc {val_acc:.3f}")
+                break
+        else:
+            # No validation: still save periodically
+            if epoch == epochs:
+                torch.save({
+                    "model_state": model.state_dict(),
+                    "label_to_idx": label_to_idx,
+                    "config": cfg,
+                    "persons": PERSONS,
+                    "joints": NUM_JOINTS,
+                    "channels": CHANNELS,
+                }, Path("models/motionbert") / "motionbert_multiclass.pt")
+
         val_losses.append(v_loss_epoch if v_loss_epoch is not None else np.nan)
 
         print(f"[MB-MC] Epoch {epoch}/{epochs} - loss {train_loss:.4f} acc {train_acc:.3f}{val_msg}")
@@ -341,7 +371,9 @@ def train_multiclass_motionbert(csv_path: str, epochs: int, batch_size: int, lr:
     samples_path = OUT_DIR / "samples.txt"
     with torch.no_grad():
         lines = []
-        sample_loader = _seqs_to_loader((val_seqs or train_seqs)[:min(16, len(train_seqs))], False, bs=1)
+        subset = val_seqs if val_seqs else train_seqs
+        subset = subset[:min(16, len(subset))]
+        sample_loader = _seqs_to_loader(subset, False, bs=1)
         for x_bt, lengths, y in sample_loader:
             x_in = _reshape_to_actionnet_input(x_bt.to(device_t), PERSONS, NUM_JOINTS, CHANNELS)
             logits = model(x_in)
