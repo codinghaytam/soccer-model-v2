@@ -25,7 +25,8 @@ TEST_SPLIT = 0.2
 SEED = 42
 OUT_DIR = Path("models/lstm")
 # Replicate videos N times (dataset multiplier)
-MULTIPLIER = 1
+MULTIPLIER = 5
+EARLY_STOP_ACC = 0.95  # stop when val accuracy >= this
 
 
 def _split_sequences(ds_sequences, test_split):
@@ -126,6 +127,7 @@ def train_multiclass(csv_path: str, epochs: int, batch_size: int, lr: float, dev
 
     train_losses = []
     val_losses = []
+    best_val_acc = -1.0
 
     for epoch in range(1, epochs + 1):
         # Train
@@ -176,13 +178,21 @@ def train_multiclass(csv_path: str, epochs: int, batch_size: int, lr: float, dev
 
         print(f"[LSTM-MC] Epoch {epoch}/{epochs} - loss {train_loss:.4f} acc {train_acc:.3f}{val_msg}")
 
-    # Save single multiclass model
-    out_dir = Path("models/lstm")
-    out_dir.mkdir(parents=True, exist_ok=True)
-    ckpt_path = out_dir / "lstm_multiclass.pt"
-    torch.save({"model_state": model.state_dict(), "input_dim": input_dim, "num_classes": num_classes,
-                "label_to_idx": label_to_idx}, ckpt_path)
-    print(f"Saved multiclass LSTM model to {ckpt_path}")
+        # Track best
+        if val_loader is not None and val_acc > best_val_acc:
+            best_val_acc = val_acc
+            # Save single multiclass model
+            out_dir = Path("models/lstm")
+            out_dir.mkdir(parents=True, exist_ok=True)
+            ckpt_path = out_dir / "lstm_multiclass.pt"
+            torch.save({"model_state": model.state_dict(), "input_dim": input_dim, "num_classes": num_classes,
+                        "label_to_idx": label_to_idx}, ckpt_path)
+            print(f"Saved multiclass LSTM model to {ckpt_path}")
+
+        # Early stopping when threshold reached
+        if val_loader is not None and val_acc >= EARLY_STOP_ACC:
+            print(f"[LSTM-MC] Early stop at epoch {epoch} with val acc {val_acc:.3f}")
+            break
 
     # Learning curves
     _plot_learning_curves(train_losses, val_losses, OUT_DIR / "learning_curve.png")

@@ -17,15 +17,23 @@ import matplotlib.pyplot as plt
 
 # IDE configuration
 CSV_PATH = "data/keypoints.csv"
-EPOCHS = 300
+EPOCHS = 200
 BATCH_SIZE = 16
-LEARNING_RATE = 1e-2
+LEARNING_RATE = 1e-3
 DEVICE = "cuda"  # or "cpu"
 TEST_SPLIT = 0.2
 SEED = 42
 OUT_DIR = Path("models/cnn")
 # Replicate videos N times (dataset multiplier)
 MULTIPLIER = 1
+
+# Regularization controls
+WEIGHT_DECAY = 1e-3 # L2
+LABEL_SMOOTHING = 0.5  # 0 disables smoothing
+CLIP_GRAD_NORM = 0.0   # 0 or None disables clipping
+
+# Early stopping when validation accuracy surpasses threshold
+EARLY_STOP_ACC = 0.9
 
 
 def _split_sequences(ds_sequences, test_split):
@@ -126,8 +134,8 @@ def train_multiclass_cnn(csv_path: str, epochs: int, batch_size: int, lr: float,
 
     # Model and training setup
     model = CNN1DClassifier(input_dim=input_dim, num_classes=num_classes).to(device_t)
-    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
-    criterion = nn.CrossEntropyLoss()
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=WEIGHT_DECAY)
+    criterion = nn.CrossEntropyLoss(label_smoothing=LABEL_SMOOTHING)
 
     train_losses = []
     val_losses = []
@@ -146,6 +154,9 @@ def train_multiclass_cnn(csv_path: str, epochs: int, batch_size: int, lr: float,
                 logits = model(x)
                 loss = criterion(logits, y)
                 loss.backward()
+                # Gradient clipping (per-norm)
+                if CLIP_GRAD_NORM and CLIP_GRAD_NORM > 0:
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=CLIP_GRAD_NORM)
                 optimizer.step()
                 total_loss += loss.item() * x.size(0)
                 n_samples += x.size(0)
@@ -158,6 +169,7 @@ def train_multiclass_cnn(csv_path: str, epochs: int, batch_size: int, lr: float,
         # Validate
         val_msg = ""
         v_loss_epoch = None
+        v_acc_epoch = None
         if val_loader is not None:
             model.eval()
             v_total = 0.0
@@ -176,10 +188,16 @@ def train_multiclass_cnn(csv_path: str, epochs: int, batch_size: int, lr: float,
             val_loss = v_total / max(v_count, 1)
             val_acc = v_correct / max(v_count, 1)
             v_loss_epoch = val_loss
+            v_acc_epoch = val_acc
             val_msg = f" | val loss {val_loss:.4f} acc {val_acc:.3f}"
         val_losses.append(v_loss_epoch if v_loss_epoch is not None else np.nan)
 
         print(f"[CNN-MC] Epoch {epoch}/{epochs} - loss {train_loss:.4f} acc {train_acc:.3f}{val_msg}")
+
+        # Early stop condition
+        if v_acc_epoch is not None and v_acc_epoch >= EARLY_STOP_ACC:
+            print(f"[CNN-MC] Early stopping at epoch {epoch} as val acc {v_acc_epoch:.3f} >= {EARLY_STOP_ACC}")
+            break
 
     # Save single multiclass CNN model
     out_dir = Path("models/cnn")

@@ -32,6 +32,8 @@ CSV_PATH = "data/keypoints.csv"
 EPOCHS = 150
 BATCH_SIZE = 16
 LEARNING_RATE = 1e-2
+WEIGHT_DECAY = 1e-4  # L2 regularization
+LABEL_SMOOTH = 0.05  # CrossEntropy label smoothing
 DEVICE = "cuda"
 TEST_SPLIT = 0.2
 SEED = 42
@@ -68,7 +70,7 @@ def _load_mb_config(path: Path):
 
 
 def _build_motionbert_backbone(cfg: dict):
-    from DSTformer import DSTformer
+    from lib.model.DSTformer import DSTformer
     # Map YAML keys to DSTformer signature
     dim_in = int(cfg.get('dim_in', 3))
     dim_out = int(cfg.get('dim_out', 3))
@@ -109,7 +111,7 @@ def _build_motionbert_backbone(cfg: dict):
 
 
 def _build_actionnet(backbone, cfg: dict, num_classes: int, num_joints: int):
-    from model_action import ActionNet
+    from lib.model.model_action import ActionNet
     dim_rep = int(cfg.get('dim_rep', cfg.get('dim_feat', 512)))
     dropout_ratio = float(cfg.get('dropout_ratio', 0.0))
     hidden_dim = int(cfg.get('hidden_dim', 2048))
@@ -181,12 +183,33 @@ def train_multiclass_motionbert(csv_path: str, epochs: int, batch_size: int, lr:
     if len(filtered_all) == 0:
         print("No sequences left after filtering 'substitution'.")
         return
+
+    # Class equalization: downsample each label to the minimum count
+    by_label = {}
+    for x, lbl in filtered_all:
+        by_label.setdefault(lbl, []).append((x, lbl))
+    counts = {lbl: len(items) for lbl, items in by_label.items()}
+    min_count = min(counts.values())
+    balanced = []
+    rng = random.Random(SEED)
+    for lbl, items in by_label.items():
+        if len(items) > min_count:
+            # deterministic downsample
+            idxs = list(range(len(items)))
+            rng.shuffle(idxs)
+            sel = idxs[:min_count]
+            balanced.extend([items[i] for i in sel])
+        else:
+            balanced.extend(items)
+
     # Duplicate dataset N times according to MULTIPLIER
+    sequences_source = balanced
     if MULTIPLIER > 1:
-        augmented_all = filtered_all * int(MULTIPLIER)
+        augmented_all = sequences_source * int(MULTIPLIER)
     else:
-        augmented_all = filtered_all
-    labels = sorted({lbl for _, lbl in filtered_all})
+        augmented_all = sequences_source
+
+    labels = sorted({lbl for _, lbl in augmented_all})
     label_to_idx = {lbl: i for i, lbl in enumerate(labels)}
     num_classes = len(label_to_idx)
 
@@ -206,8 +229,10 @@ def train_multiclass_motionbert(csv_path: str, epochs: int, batch_size: int, lr:
     except Exception as e:
         raise RuntimeError(f"Failed to load state_dict: {e}")
 
-    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
-    criterion = nn.CrossEntropyLoss()
+    # Optimizer with L2 regularization (weight decay)
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=WEIGHT_DECAY)
+    # Criterion with label smoothing
+    criterion = nn.CrossEntropyLoss(label_smoothing=LABEL_SMOOTH)
     scaler = torch.cuda.amp.GradScaler(enabled=(device_t.type == "cuda"))
 
     # Train/Val split
